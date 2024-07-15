@@ -17,8 +17,7 @@ class YOLOTransformer(VideoTransformerBase):
         self.model = YOLO('assets/model2.tflite')
 
     def transform(self, frame):
-        image = Image.fromarray(frame)
-        frame_rgb = cv2.cvtColor(np.array(image), cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_detected = self.detect_objects(frame_rgb)
         return frame_detected
 
@@ -52,7 +51,7 @@ def main():
     start_time = time.time()
     detection_duration = 15  # duration for detection in seconds
 
-    while webrtc_ctx.video_receiver.running:
+    while webrtc_ctx.video_transformer.running:
         if time.time() - start_time > detection_duration:
             break
 
