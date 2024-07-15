@@ -4,19 +4,27 @@ import numpy as np
 import time
 from collections import Counter
 from ultralytics import YOLO
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+
 st.set_page_config(initial_sidebar_state="collapsed")
 st.markdown("<h1 style='text-align: center;font-size:30px; color: red;'>Muzzle Detection With Camera</h1>", unsafe_allow_html=True)
 st.markdown("<h1 style='text-align: center;font-size:15px; color: green;'>loading may take sometime</h1>", unsafe_allow_html=True)
-with st.container(height=730):
-    model = YOLO('assets/model2.tflite')
-    last_predictions = []
 
-    def detect_objects(frame):
-        global last_predictions
+model = YOLO('assets/model2.tflite')
+detected_classes = []
+start_time = None
+detection_duration = 15  # duration for detection in seconds
 
-        results = model(frame, task='detect', show=False)
+class VideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.last_predictions = []
 
-        last_prediction = []
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        results = model(img, task='detect', show=False)
+
+        self.last_predictions = []
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0]
@@ -24,82 +32,61 @@ with st.container(height=730):
                 cls = box.cls[0]
                 class_name = model.names[int(cls)]
 
-                last_predictions.append({
+                self.last_predictions.append({
                     'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
                     'confidence': conf, 'class': class_name
                 })
 
-        for prediction in last_predictions:
+        for prediction in self.last_predictions:
             x1, y1, x2, y2 = int(prediction['x1']), int(prediction['y1']), int(prediction['x2']), int(prediction['y2'])
             confidence = prediction['confidence']
             class_name = prediction['class']
 
-            # Draw the bounding box and label on the frame
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 12)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             label = f"{class_name}: {confidence:.2f}"
-            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 3)
+            cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-        return frame
+        global detected_classes, start_time
+        if start_time is None:
+            start_time = time.time()
 
-    def main():
-        video_capture = cv2.VideoCapture(0)
+        for prediction in self.last_predictions:
+            detected_classes.append(prediction['class'])
 
-        if not video_capture.isOpened():
-            st.error('Error: Could not open video device')
-            return
+        if time.time() - start_time > detection_duration:
+            return None
 
-        start_button, stop_button = st.columns(2, vertical_alignment="top")
-        start_button = st.button("Start Camera and Wait for 15 sec", use_container_width=True)
-        stop_button = st.button("Stop Camera", use_container_width=True)
+        return img
 
-        camera_started = False
+def main():
+    global detected_classes, start_time
 
-        if start_button:
-            camera_started = True
+    with st.container(height=730):
+        ctx = webrtc_streamer(
+            key="example",
+            video_processor_factory=VideoProcessor,
+            rtc_configuration=RTCConfiguration(
+                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+            )
+        )
 
-        if stop_button:
-            camera_started = False
+        if ctx.video_transformer:
+            if st.button("Stop Camera"):
+                ctx.video_transformer.stop()
 
-        frame_placeholder = st.empty()
-        detected_classes = []
+    if not ctx.state.playing and detected_classes:
+        most_common_class = Counter(detected_classes).most_common(1)[0][0]
+        st.write(f"The most occurred class: {most_common_class}")
+        st.switch_page(f"pages/{most_common_class}.py")
 
-        start_time = time.time()
-        detection_duration = 15  # duration for detection in seconds
+    _, back, _ = st.columns(3, vertical_alignment="bottom")
+    back = st.button("Back Home", use_container_width=True)
+    if back:
+        st.switch_page("main.py")
 
-        while camera_started:
-            ret, frame = video_capture.read()
+    # Reset global variables
+    detected_classes = []
+    start_time = None
 
-            if not ret:
-                st.warning('No frame is available, check camera connection')
-                break
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_detected = detect_objects(frame_rgb)
-
-            for prediction in last_predictions:
-                detected_classes.append(prediction['class'])
-
-            frame_placeholder.image(frame_detected, channels='RGB', use_column_width=True)
-
-            if time.time() - start_time > detection_duration:
-                camera_started = False
-
-            time.sleep(0.1)
-            last_predictions.clear()
-            st.cache_data.clear()
-
-        video_capture.release()
-        cv2.destroyAllWindows()
-
-        if detected_classes:
-            most_common_class = Counter(detected_classes).most_common(1)[0][0]
-            st.write(f"The most occurred class: {most_common_class}")
-            st.switch_page(f"pages/{most_common_class}.py")
-
-        _, back, _ = st.columns(3, vertical_alignment="bottom")
-        back = st.button("Back Home", use_container_width=True)
-        if back:
-            st.switch_page("main.py")
-
-    if __name__ == '__main__':
-        main()
+if __name__ == '__main__':
+    main()
